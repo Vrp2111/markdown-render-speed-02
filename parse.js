@@ -159,74 +159,103 @@ function listInterrupt(line, rules, current = false) {
   }
 }
 function collectList(input, state) {
-  const opening = listOpening.exec(input);
-  if (!opening) return null;
-  const marker = opening[1].trim(), ordered = marker.length !== 1;
-  const style = marker[marker.length - 1];
-  let itemPattern = itemPatterns.get(style);
-  if (!itemPattern) {
-    const markerPattern = ordered ? '\\d{1,9}\\' + style : '\\' + style;
-    itemPattern = new RegExp('( {0,3}' + markerPattern + ')((?:[ \\t][^\\n]*)?(?:\\n|$))', 'y');
-    itemPatterns.set(style, itemPattern);
+  const head = listOpening.exec(input);
+  if (head === null) return null;
+  const bullet = head[1].trim();
+  const ordered = bullet.length > 1;
+  const ending = bullet[bullet.length - 1];
+  let pattern = itemPatterns.get(ending);
+  if (pattern === undefined) {
+    const bulletSource = ordered ? '\\d{1,9}\\' + ending : '\\' + ending;
+    pattern = new RegExp('( {0,3}' + bulletSource + ')((?:[ \\t][^\\n]*)?(?:\\n|$))', 'y');
+    itemPatterns.set(ending, pattern);
   }
-  const list = { type: 'list', raw: '', ordered, start: ordered ? Number(marker.slice(0, -1)) : 1, loose: false, items: [] };
-  let cursor = 0, previousBlank = false;
-  while (cursor < input.length) {
-    itemPattern.lastIndex = cursor;
-    const match = itemPattern.exec(input);
-    if (!match || horizontalRule.test(match[0])) break;
-    const start = cursor;
-    cursor += match[0].length;
-    const newline = match[2].indexOf('\n');
-    let content = expandIndent(newline < 0 ? match[2] : match[2].slice(0, newline), match[1].length);
-    let lastLine = content, empty = !content.trim(), width;
-    if (empty) width = match[1].length + 1;
-    else {
-      width = indentation(content);
-      if (width > 4) width = 1;
-      content = content.slice(width); lastLine = content; width += match[1].length;
+  const list = { type: 'list', raw: '', ordered, start: ordered ? Number(bullet.slice(0, -1)) : 1, loose: false, items: [] };
+  let position = 0, blankAfterItem = false;
+  while (position < input.length) {
+    pattern.lastIndex = position;
+    const itemHead = pattern.exec(input);
+    if (itemHead === null || horizontalRule.test(itemHead[0])) break;
+    const itemStart = position;
+    position += itemHead[0].length;
+    const headEnd = itemHead[2].indexOf('\n');
+    let body = expandIndent(headEnd === -1 ? itemHead[2] : itemHead[2].slice(0, headEnd), itemHead[1].length);
+    let preceding = body;
+    let wasBlank = !body.trim();
+    let margin = itemHead[1].length + 1;
+    if (!wasBlank) {
+      let padding = indentation(body);
+      if (padding > 4) padding = 1;
+      body = body.slice(padding);
+      preceding = body;
+      margin = itemHead[1].length + padding;
     }
-    let end = input.indexOf('\n', cursor);
-    let line = input.slice(cursor, end < 0 ? input.length : end);
-    if (empty && /^[ \t]*$/.test(line)) cursor += line.length + 1;
-    else {
-      const rules = continuationGrammar(width), lines = [content];
-      while (cursor < input.length) {
-        end = input.indexOf('\n', cursor);
-        line = input.slice(cursor, end < 0 ? input.length : end);
+    let lineEnd = input.indexOf('\n', position);
+    let line = input.slice(position, lineEnd < 0 ? input.length : lineEnd);
+    if (wasBlank && /^[ \t]*$/.test(line)) {
+      position += line.length + 1;
+    } else {
+      const rules = continuationGrammar(margin);
+      const parts = [body];
+      while (position < input.length) {
         const expanded = expandIndent(line);
-        if (listInterrupt(line, rules)) break;
-        if (indentation(expanded) >= width || !line.trim()) lines.push(expanded.slice(width));
-        else {
-          if (empty || indentation(lastLine, 4) >= 4 || listInterrupt(lastLine, rules, true)) break;
-          const setextLike = /^ {0,3}(?:=+|-+) *$/.test(line) && underlineHeading.test(lastLine + '\n' + line);
-          lines.push(setextLike ? '    ' + expanded.replace(/^ {0,3}/, '') : line);
+        const indent = indentation(expanded);
+        // An interrupt must start before the item's content column.
+        if (indent < margin && listInterrupt(line, rules)) break;
+        const contentCode = expanded.charCodeAt(indent);
+        const blank = indent < 0 || (contentCode <= 32 || contentCode > 126) && !line.trim();
+        const continuation = expanded.slice(margin);
+        if (indent >= margin || blank) {
+          parts.push(continuation);
+        } else {
+          if (wasBlank || indentation(preceding, 4) >= 4 || listInterrupt(preceding, rules, true)) break;
+          const underline = /^ {0,3}(?:=+|-+) *$/.test(line) && underlineHeading.test(preceding + '\n' + line);
+          parts.push(underline ? '    ' + expanded.replace(/^ {0,3}/, '') : line);
         }
-        empty = !line.trim(); cursor = end < 0 ? input.length : end + 1; lastLine = expanded.slice(width);
+        wasBlank = blank;
+        preceding = continuation;
+        position = lineEnd < 0 ? input.length : lineEnd + 1;
+        if (position >= input.length) break;
+        lineEnd = input.indexOf('\n', position);
+        line = input.slice(position, lineEnd < 0 ? input.length : lineEnd);
       }
-      content = lines.join('\n');
+      body = parts.join('\n');
     }
-    const raw = input.slice(start, cursor);
-    if (!list.loose) { if (previousBlank) list.loose = true; else previousBlank = hasBlankEnding(raw); }
-    list.items.push({ raw, text: content, task: /^\[[ xX]\][ \t]+\S/.test(content), children: [] });
+    const raw = input.slice(itemStart, position);
+    if (!list.loose) {
+      if (blankAfterItem) list.loose = true;
+      else blankAfterItem = hasBlankEnding(raw);
+    }
+    list.items.push({ raw, text: body, task: /^\[[ xX]\][ \t]+\S/.test(body), children: [] });
   }
-  if (!list.items.length) return null;
-  const finalItem = list.items[list.items.length - 1];
-  finalItem.raw = finalItem.raw.trimEnd(); finalItem.text = finalItem.text.trimEnd();
-  list.raw = input.slice(0, cursor).trimEnd();
+  const count = list.items.length;
+  if (count === 0) return null;
+  list.items[count - 1].raw = list.items[count - 1].raw.trimEnd();
+  list.items[count - 1].text = list.items[count - 1].text.trimEnd();
+  list.raw = input.slice(0, position).trimEnd();
   for (const item of list.items) {
-    state.top = false; collectBlocks(item.text, state, item.children);
-    if (!list.loose) for (const child of item.children) if (child.type === 'space' && /\n.*\n/.test(child.raw)) { list.loose = true; break; }
+    state.top = false;
+    collectBlocks(item.text, state, item.children);
+    if (!list.loose) {
+      for (const child of item.children) {
+        if (child.type === 'space' && /\n.*\n/.test(child.raw)) {
+          list.loose = true;
+          break;
+        }
+      }
+    }
   }
   for (const item of list.items) {
-    const child = item.children[0];
-    if (item.task && (child?.type === 'text' || child?.type === 'paragraph')) {
+    const first = item.children[0];
+    if (item.task && (first?.type === 'text' || first?.type === 'paragraph')) {
       item.text = item.text.replace(/^\[[ xX]\][ \t]+/, '');
-      child.raw = child.raw.replace(/^\[[ xX]\][ \t]+/, '');
-      child.text = child.text.replace(/^\[[ xX]\][ \t]+/, '');
+      first.raw = first.raw.replace(/^\[[ xX]\][ \t]+/, '');
+      first.text = first.text.replace(/^\[[ xX]\][ \t]+/, '');
       item.checked = item.raw.match(/\[[ xX]\]/)?.[0] !== '[ ]';
     } else item.task = false;
-    if (list.loose) for (const child of item.children) if (child.type === 'text') child.type = 'paragraph';
+    if (list.loose) {
+      for (const child of item.children) if (child.type === 'text') child.type = 'paragraph';
+    }
   }
   return list;
 }
@@ -367,9 +396,9 @@ const referenceScan = grammar('DIRECT|SHORT(?!\\()', {
   DIRECT: grammar(/^!?\[(LABEL)\]\[(REF)\]/, { LABEL: scanningLabel, REF: /(?!\s*\])(?:\\[\s\S]|[^\[\]\\]){1,999}/ }),
   SHORT: grammar(/^!?\[(REF)\](?:\[\])?/, { REF: /(?!\s*\])(?:\\[\s\S]|[^\[\]\\]){1,999}/ })
 }, 'g');
-const opaqueScan = grammar(/LINK|(?<!`)()CODE|HTML/, {
-  LINK: /\[(?:[^\[\]`]|(?<q>`+)[^`]+\k<q>(?!`))*?\]\((?:\\[\s\S]|[^\\()]|\((?:\\[\s\S]|[^\\()])*\))*\)/,
-  CODE: /(?<r>`+)[^`]+\k<r>(?!`)/,
+const opaqueScan = grammar(/LINK|(?<!`)CODE|HTML/, {
+  LINK: /\[(?:[^\[\]`]|(`+)[^`]+\1(?!`))*?\]\((?:\\[\s\S]|[^\\()]|\((?:\\[\s\S]|[^\\()])*\))*\)/,
+  CODE: /(`+)[^`]+\2(?!`)/,
   HTML: /<(?! )[^<>]*?>/
 }, 'g');
 const punctuationEscapeScan = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\p{P}\p{S}])/gu;
@@ -429,37 +458,43 @@ function labelContainsLink(text, state) {
   return false;
 }
 function maskDelimiters(text, state) {
-  const bracket = text.indexOf('[') >= 0, tick = text.indexOf('`') >= 0;
-  const slash = text.indexOf('\\') >= 0, angle = text.indexOf('<') >= 0;
-  if (!bracket && !tick && !slash && !angle) return text;
+  const bracket = text.includes('[');
+  const tick = text.includes('`');
+  const slash = text.includes('\\');
+  const angle = text.includes('<');
+  if (!(bracket || tick || slash || angle)) return text;
   let masked = text;
   if (bracket && state.referenceCount) {
     const hideReference = value => {
       const opening = value.lastIndexOf('[');
-      if (!Object.hasOwn(state.references, referenceKey(value.slice(opening + 1, -1)))) return value;
+      const key = referenceKey(value.slice(opening + 1, -1));
+      if (!Object.hasOwn(state.references, key)) return value;
       if (opening > 1 && value[0] !== '!') {
         const inner = value.slice(1, opening - 1);
-        if (labelContainsLink(inner, state)) return '[' + inner.replace(referenceScan, hideReference) + '][' + 'a'.repeat(value.length - opening - 2) + ']';
+        if (labelContainsLink(inner, state)) {
+          const label = inner.replace(referenceScan, hideReference);
+          return '[' + label + '][' + 'a'.repeat(value.length - opening - 2) + ']';
+        }
       }
       return '[' + 'a'.repeat(value.length - 2) + ']';
     };
     masked = masked.replace(referenceScan, hideReference);
   }
-  if (slash || tick && text.includes('``')) masked = masked.replace(punctuationEscapeScan, (value, fence, escaped) => {
-    if (escaped) return '+'.repeat(value.length);
-    if (fence) {
-      const innerTick = value.indexOf('`', fence.length);
-      if (innerTick >= value.length - fence.length) return value;
-      return fence + value.slice(fence.length, -fence.length).replace(/`/g, '+') + fence;
-    }
-    return value;
-  });
-  if (tick || angle || bracket && text.indexOf('](') >= 0) masked = masked.replace(opaqueScan, (value, ignored, fence) => {
+  if (slash || tick && text.includes('``')) {
+    masked = masked.replace(punctuationEscapeScan, (value, fence, escaped) => {
+      if (escaped) return '+'.repeat(value.length);
+      if (!fence) return value;
+      const inner = value.indexOf('`', fence.length);
+      if (inner >= value.length - fence.length) return value;
+      const body = value.slice(fence.length, -fence.length).replace(/`/g, '+');
+      return fence + body + fence;
+    });
+  }
+  if (!(tick || angle || bracket && text.includes(']('))) return masked;
+  return masked.replace(opaqueScan, value => {
     if (!/[*_~]/.test(value)) return value;
-    const width = fence ? fence.length : 0;
-    return value.slice(0, width) + '[' + 'a'.repeat(value.length - width - 2) + ']';
+    return '[' + 'a'.repeat(value.length - 2) + ']';
   });
-  return masked;
 }
 function tagCrossesLabel(input, label, offset) {
   if (label.indexOf('<') < 0) return false;
@@ -525,18 +560,20 @@ function codePointBefore(text, offset) {
 }
 function lastCloser(frame, character) {
   if (!frame.last) {
-    const positions = { '*': -1, '_': -1, '~': -1 }, text = frame.mask;
-    for (let p = 0; p < text.length; ++p) {
-      const ch = text[p];
-      if (ch !== '*' && ch !== '_' && ch !== '~') continue;
-      let end = p + 1; while (text[end] === ch) ++end;
-      if (p && !/[ \t\n\r\f]/.test(text[p - 1])) positions[ch] = p;
-      p = end - 1;
+    const positions = { '*': -1, '_': -1, '~': -1 };
+    closerRuns.lastIndex = 0;
+    let match;
+    while ((match = closerRuns.exec(frame.mask))) {
+      if (match.index && !closerWhitespace.test(frame.mask[match.index - 1])) {
+        positions[match[0][0]] = match.index;
+      }
     }
     frame.last = positions;
   }
   return frame.last[character];
 }
+const closerRuns = /\*+|_+|~+/g;
+const closerWhitespace = /[ \t\n\r\f]/;
 const easyEmphasis = /^(\*{1,2}|_{1,2})([A-Za-z0-9](?:[^*_`[\]\\~<\n]*?[A-Za-z0-9])?)\1(?=$|[\s.,:;!?()])/;
 function renderSimpleContent(text, state, plain) {
   if (text.includes('www.') || text.includes('://') || text.includes('@')) return renderInline(text, state, plain);
@@ -554,7 +591,8 @@ function consumeEmphasis(input, frame, previous, state, plain) {
     if (offset + match[0].length > frame.opaque && frame.mask === null) frame.mask = maskDelimiters(frame.text, state);
     if (offset + match[0].length <= frame.opaque || frame.mask.slice(offset, offset + match[0].length) === match[0]) {
     const inside = renderSimpleContent(match[2], state, plain), tag = match[1].length === 1 ? 'em' : 'strong';
-    return { size: match[0].length, html: plain ? inside : '<' + tag + '>' + inside + '</' + tag + '>' };
+    frame.html = plain ? inside : '<' + tag + '>' + inside + '</' + tag + '>';
+    return match[0].length;
     }
   }
   match = emphasisOpen.exec(input);
@@ -593,7 +631,8 @@ function consumeEmphasis(input, frame, previous, state, plain) {
     const length = count + match.index + (match[0].codePointAt(0) > 65535 ? 2 : 1) + width;
     const wrapping = Math.min(count, width) % 2 ? 1 : 2;
     const inside = renderInline(input.slice(wrapping, length - wrapping), state, plain), tag = wrapping === 1 ? 'em' : 'strong';
-    return { size: length, html: plain ? inside : '<' + tag + '>' + inside + '</' + tag + '>' };
+    frame.html = plain ? inside : '<' + tag + '>' + inside + '</' + tag + '>';
+    return length;
   }
   return null;
 }
@@ -643,75 +682,136 @@ function renderAutolink(match, plain, bare) {
 }
 const specialInline = /[*_`[\]<\\~]/;
 const asciiEscape = /^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/;
+function atCursor(pattern) {
+  return new RegExp(pattern.source.replace(/(^|\|)\^/g, '$1'), pattern.flags + 'y');
+}
+const cursorEscape = atCursor(asciiEscape), cursorBreak = atCursor(hardBreak);
+const cursorTag = atCursor(tagInline), cursorAngle = atCursor(angleAutolink);
+const cursorCode = atCursor(backtickSpan), cursorBare = atCursor(bareAutolink);
 function renderInline(text, state, plain = false) {
   if (!specialInline.test(text) && !text.includes('www.') && !text.includes('://') && !text.includes('@') && !/ {2,}\n[ \t]*\S/.test(text)) {
     const content = state.raw ? text : decodeNumbers(text);
     return plain || state.raw ? content : escapeHtml(content);
   }
-  const oldParens = state.parens;
-  state.parens = oldParens && text.includes(')');
-  const frame = { text, mask: null, last: null };
-  let cursor = 0, result = '', pending = '', pendingRaw = false, before = '', previousText = false;
-  function flush() {
-    if (pending) { result += plain || pendingRaw ? pending : escapeHtml(pending); pending = ''; }
-  }
+  const savedParens = state.parens;
+  state.parens = savedParens && text.includes(')');
+  const delimiters = { text, mask: null, last: null, html: '' };
+  let position = 0;
+  let output = '', literal = '', literalRaw = false;
+  let previous = '', wasLiteral = false;
   try {
-    while (cursor < text.length) {
-      if (!previousText) before = '';
-      previousText = false;
-      const code = text.charCodeAt(cursor);
-      let token = null, match, remaining;
-      if (code === 92 || code === 60 || code === 91 || code === 33 || code === 42 || code === 95 || code === 126 || code === 96 || code === 32) remaining = text.slice(cursor);
-      switch (code) {
+    while (position < text.length) {
+      if (!wasLiteral) previous = '';
+      wasLiteral = false;
+      const character = text.charCodeAt(position);
+      let consumed = 0, rendered = '', token, match;
+      switch (character) {
         case 92:
-          if ((match = asciiEscape.exec(remaining))) token = { size: match[0].length, html: plain ? match[1] : escapeHtml(match[1]) };
-          else if ((match = hardBreak.exec(remaining))) token = { size: match[0].length, html: plain ? '' : '<br>' };
+          cursorEscape.lastIndex = position;
+          if ((match = cursorEscape.exec(text))) {
+            consumed = match[0].length;
+            rendered = plain ? match[1] : escapeHtml(match[1]);
+          } else {
+            cursorBreak.lastIndex = position;
+            if ((match = cursorBreak.exec(text))) {
+              consumed = match[0].length;
+              rendered = plain ? '' : '<br>';
+            }
+          }
           break;
         case 60:
-          if ((match = tagInline.exec(remaining))) {
+          cursorTag.lastIndex = position;
+          if ((match = cursorTag.exec(text))) {
             const tag = match[0];
             if (!state.inLink && /^<a /i.test(tag)) state.inLink = true;
             else if (state.inLink && /^<\/a>/i.test(tag)) state.inLink = false;
             if (!state.raw && /^<(pre|code|kbd|script)(\s|>)/i.test(tag)) state.raw = true;
             else if (state.raw && /^<\/(pre|code|kbd|script)(\s|>)/i.test(tag)) state.raw = false;
-            token = { size: tag.length, html: tag };
-          } else if ((match = angleAutolink.exec(remaining))) token = renderAutolink(match, plain, false);
+            consumed = tag.length;
+            rendered = tag;
+          } else {
+            cursorAngle.lastIndex = position;
+            if ((match = cursorAngle.exec(text))) token = renderAutolink(match, plain, false);
+          }
           break;
-        case 91: case 33: token = consumeInlineLink(remaining, state, plain) || consumeReference(remaining, state, plain); break;
-        case 42: case 95: token = consumeEmphasis(remaining, frame, before, state, plain); break;
-        case 126: token = consumeDeletion(remaining, frame, before, state, plain); break;
+        case 91: case 33: {
+          if (character === 91 || text.charCodeAt(position + 1) === 91) {
+            const remaining = text.slice(position);
+            token = consumeInlineLink(remaining, state, plain) || consumeReference(remaining, state, plain);
+          }
+          break;
+        }
+        case 42: case 95:
+          consumed = consumeEmphasis(text.slice(position), delimiters, previous, state, plain) || 0;
+          rendered = delimiters.html;
+          break;
+        case 126:
+          token = consumeDeletion(text.slice(position), delimiters, previous, state, plain);
+          break;
         case 96:
-          if ((match = backtickSpan.exec(remaining))) {
+          cursorCode.lastIndex = position;
+          if ((match = cursorCode.exec(text))) {
             let content = match[2].replace(/\n/g, ' ');
             if (/[^ ]/.test(content) && content[0] === ' ' && content.endsWith(' ')) content = content.slice(1, -1);
-            token = { size: match[0].length, html: plain ? content : '<code>' + escapeHtml(content, true) + '</code>' };
+            consumed = match[0].length;
+            rendered = plain ? content : '<code>' + escapeHtml(content, true) + '</code>';
           }
           break;
         case 32:
-          if ((match = hardBreak.exec(remaining))) token = { size: match[0].length, html: plain ? '' : '<br>' };
+          cursorBreak.lastIndex = position;
+          if ((match = cursorBreak.exec(text))) {
+            consumed = match[0].length;
+            rendered = plain ? '' : '<br>';
+          }
           break;
         default:
-          if (!state.inLink && couldAutolink(text, cursor) && (match = bareAutolink.exec(text.slice(cursor)))) token = renderAutolink(match, plain, true);
+          if (!state.inLink && couldAutolink(text, position)) {
+            cursorBare.lastIndex = position;
+            if ((match = cursorBare.exec(text))) token = renderAutolink(match, plain, true);
+          }
       }
       if (token) {
-        cursor += token.size;
         if (token.literal !== undefined) {
-          if (pending && pendingRaw !== state.raw) flush();
-          pending += token.literal; pendingRaw = state.raw;
-        } else { flush(); result += token.html; }
+          position += token.size;
+          if (literal && literalRaw !== state.raw) {
+            output += plain || literalRaw ? literal : escapeHtml(literal);
+            literal = '';
+          }
+          literal += token.literal;
+          literalRaw = state.raw;
+          continue;
+        }
+        consumed = token.size;
+        rendered = token.html;
+      }
+      if (consumed) {
+        position += consumed;
+        if (literal) {
+          output += plain || literalRaw ? literal : escapeHtml(literal);
+          literal = '';
+        }
+        output += rendered;
         continue;
       }
-      const length = plainRunLength(text, cursor);
-      if (!length) throw new Error('Inline scanner did not advance');
-      const raw = text.slice(cursor, cursor + length), content = state.raw ? raw : decodeNumbers(raw);
-      cursor += length;
-      if (content[content.length - 1] !== '_') before = content[content.length - 1];
-      previousText = true;
-      if (pending && pendingRaw !== state.raw) flush();
-      pending += content; pendingRaw = state.raw;
+      const count = plainRunLength(text, position);
+      if (!count) throw new Error('Inline scanner did not advance');
+      const raw = text.slice(position, position + count);
+      const decoded = state.raw ? raw : decodeNumbers(raw);
+      position += count;
+      if (decoded[decoded.length - 1] !== '_') previous = decoded[decoded.length - 1];
+      wasLiteral = true;
+      if (literal && literalRaw !== state.raw) {
+        output += plain || literalRaw ? literal : escapeHtml(literal);
+        literal = '';
+      }
+      literal += decoded;
+      literalRaw = state.raw;
     }
-    flush(); return result;
-  } finally { state.parens = oldParens; }
+    if (literal) output += plain || literalRaw ? literal : escapeHtml(literal);
+    return output;
+  } finally {
+    state.parens = savedParens;
+  }
 }
 function inlineBlock(text, state) { state.raw = false; return renderInline(text, state); }
 function renderBlocks(nodes, state) {
