@@ -1,20 +1,17 @@
-# markdown-render-speed-02
+# Markdown rendering entry
 
 [![make.fun](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02)
 [![rank](https://make.fun/badge/markdown-render-speed-02/vrp2111/markdown-render-speed-02/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard)
 [![reward](https://make.fun/badge/markdown-render-speed-02/vrp2111/markdown-render-speed-02/reward.svg)](https://make.fun/bounty/markdown-render-speed-02)
 
-Owner: **vrp2111**. A dependency-free ES module for rendering Markdown with marked 18.1.3 default-output compatibility.
+Owner: **vrp2111**
 
-```js
-import { parse } from './parse.js';
-console.log(parse('Hello **world**!'));
-```
+`parse.js` exports synchronous `parse(markdown)`, a dependency-free renderer targeting the exact default HTML of marked 18.1.3. Block collection resolves document references before inline rendering. Delimiter frames preserve punctuation and nesting rules; lazy masking hides links, code, and tags from delimiter searches. Safe URI destinations avoid encoding, and masking skips irrelevant passes.
 
-The parser gathers blocks and reference definitions, then renders inline content directly to HTML. Indexed list scanning, character dispatch, lazy delimiter masking, and simple-text and emphasis fast paths reduce intermediate work. State is local to each call; output does not depend on earlier documents.
+Run `node main.ts` with Node 22's TypeScript support. The driver reads `/input/cases.json` and writes the ordered HTML string array to `/output/html.json`. No dependencies or build are required. Parser state belongs to one document and is discarded after rendering.
 
-Run `node main.ts` on Node 22.23.4 or newer. The driver reads `/input/cases.json` and writes `/output/html.json`, preserving document order. No installation or build step is needed.
+Correctness and timing are checked with the external competition harness. Local benchmark results are host-dependent and do not predict a server rank.
 
-Validation uses the competition's external practice harness: 680 specification examples and 40 generated documents, compared byte for byte with marked. All 720 pass. Timing is measured separately with the external five-round per-case benchmark; results vary with host load and runtime warmup.
+Final local verification: practice 720/720 and unseen 720/720. Five-round per-case timing totaled 336.5 ms versus marked's 667.1 ms (1.98×); median case speedup was 1.83×, with document median 1.99× and minimum 1.50×. This improves the supplied 355.0 ms baseline by about 5.2%, but does not meet the approximately 320 ms target. The separate batch benchmark measured 354.4 ms for documents and 338.4 ms for all cases.
 
-MIT licensed; see [LICENSE](LICENSE).
+See [LICENSE](LICENSE) for licensing.
